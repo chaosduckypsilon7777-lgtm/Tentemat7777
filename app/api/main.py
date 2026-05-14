@@ -2,13 +2,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import String, cast, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
 from app.fetchers.engine import FetchingEngine
 from app.monitoring.healthcheck import database_health
 from app.monitoring.logs import configure_logging
+from app.normalizers.market_normalizer import first_outcome_price
 from app.scheduler.jobs import build_scheduler
 from app.sources.registry import load_sources
 from app.storage.models import FetchLog, MarketData, NormalizedItem, RawItem, Source
@@ -187,6 +188,8 @@ def dashboard():
     a { color: var(--blue); text-decoration: none; }
     .muted { color: var(--muted); }
     .title-cell { max-width: 640px; }
+    .market-cell { max-width: 520px; }
+    .number-cell { font-variant-numeric: tabular-nums; white-space: nowrap; }
     .error-detail {
       display: block;
       max-width: 380px;
@@ -308,12 +311,39 @@ def dashboard():
         </table>
       </div>
     </section>
+
+    <section class="wide">
+      <div class="section-head">
+        <h2>Dane rynkowe</h2>
+        <span id="marketsCount" class="status">market_data</span>
+      </div>
+      <div class="content">
+        <div class="filters">
+          <label>
+            Zrodlo
+            <select id="marketSourceFilter" onchange="loadMarkets()">
+              <option value="">Wszystkie</option>
+            </select>
+          </label>
+          <label>
+            Szukaj rynku
+            <input id="marketSearchFilter" type="search" placeholder="np. election, Fed, NBA" oninput="queueMarketsLoad()">
+          </label>
+          <button onclick="resetMarketFilters()">Wyczysc</button>
+        </div>
+        <table>
+          <thead><tr><th>Rynek</th><th>Mid</th><th>Bid</th><th>Ask</th><th>Volume</th><th>Spread</th><th>Czas</th></tr></thead>
+          <tbody id="markets"></tbody>
+        </table>
+      </div>
+    </section>
     </div>
   </main>
 
   <script>
     const sourceNames = new Map();
     let itemSearchTimer = null;
+    let marketSearchTimer = null;
 
     async function api(path, options) {
       const response = await fetch(path, options);
@@ -352,6 +382,11 @@ def dashboard():
       return firstLine.length > 140 ? `${firstLine.slice(0, 137)}...` : firstLine;
     }
 
+    function fmtNumber(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      return Number(value).toLocaleString("pl-PL", { maximumFractionDigits: 4 });
+    }
+
     async function loadHealth() {
       const el = document.getElementById("health");
       try {
@@ -387,10 +422,13 @@ def dashboard():
       const body = document.getElementById("sources");
       const actions = document.getElementById("sourceActions");
       const sourceFilter = document.getElementById("sourceFilter");
+      const marketSourceFilter = document.getElementById("marketSourceFilter");
       const selectedSource = sourceFilter.value;
+      const selectedMarketSource = marketSourceFilter.value;
       body.innerHTML = "";
       actions.innerHTML = "";
       sourceFilter.innerHTML = `<option value="">Wszystkie</option>`;
+      marketSourceFilter.innerHTML = `<option value="">Wszystkie</option>`;
       sourceNames.clear();
       for (const row of rows) {
         sourceNames.set(row.id, row.name);
@@ -402,12 +440,16 @@ def dashboard():
           </tr>
         `);
         sourceFilter.insertAdjacentHTML("beforeend", `<option value="${escapeHTML(row.name)}">${escapeHTML(row.name)}</option>`);
+        if (row.category === "market") {
+          marketSourceFilter.insertAdjacentHTML("beforeend", `<option value="${escapeHTML(row.name)}">${escapeHTML(row.name)}</option>`);
+        }
         const button = document.createElement("button");
         button.textContent = `Pobierz ${row.name}`;
         button.onclick = () => fetchSource(row.name, button);
         actions.appendChild(button);
       }
       sourceFilter.value = [...sourceFilter.options].some((option) => option.value === selectedSource) ? selectedSource : "";
+      marketSourceFilter.value = [...marketSourceFilter.options].some((option) => option.value === selectedMarketSource) ? selectedMarketSource : "";
       if (!rows.length) emptyRow(body, 3, "Brak zrodel");
     }
 
@@ -500,6 +542,44 @@ def dashboard():
       loadItems();
     }
 
+    async function loadMarkets() {
+      const params = new URLSearchParams({ limit: "50" });
+      const source = document.getElementById("marketSourceFilter").value;
+      const query = document.getElementById("marketSearchFilter").value.trim();
+      if (source) params.set("source", source);
+      if (query) params.set("q", query);
+
+      const rows = await api(`/market-data?${params.toString()}`);
+      const body = document.getElementById("markets");
+      body.innerHTML = "";
+      for (const row of rows) {
+        body.insertAdjacentHTML("beforeend", `
+          <tr>
+            <td class="market-cell">${escapeHTML(row.question || row.market_or_asset_id)}</td>
+            <td class="number-cell">${fmtNumber(row.mid_price)}</td>
+            <td class="number-cell">${fmtNumber(row.bid)}</td>
+            <td class="number-cell">${fmtNumber(row.ask)}</td>
+            <td class="number-cell">${fmtNumber(row.volume)}</td>
+            <td class="number-cell">${fmtNumber(row.spread)}</td>
+            <td>${fmtDate(row.timestamp)}</td>
+          </tr>
+        `);
+      }
+      document.getElementById("marketsCount").textContent = `${rows.length} rekordow`;
+      if (!rows.length) emptyRow(body, 7, "Brak danych rynkowych dla wybranych filtrow");
+    }
+
+    function queueMarketsLoad() {
+      clearTimeout(marketSearchTimer);
+      marketSearchTimer = setTimeout(loadMarkets, 250);
+    }
+
+    function resetMarketFilters() {
+      document.getElementById("marketSourceFilter").value = "";
+      document.getElementById("marketSearchFilter").value = "";
+      loadMarkets();
+    }
+
     async function loadAll() {
       await loadHealth();
       await loadSummary();
@@ -507,6 +587,7 @@ def dashboard():
       await loadItemTypes();
       await loadLogs();
       await loadItems();
+      await loadMarkets();
     }
 
     loadAll();
@@ -644,6 +725,66 @@ def list_item_types(session: Session = Depends(get_session)):
         select(NormalizedItem.item_type).distinct().order_by(NormalizedItem.item_type)
     ).all()
     return rows
+
+
+def _market_question(raw_json: dict | None) -> str | None:
+    if not raw_json:
+        return None
+    return (
+        raw_json.get("question")
+        or raw_json.get("title")
+        or raw_json.get("slug")
+        or raw_json.get("description")
+    )
+
+
+def _market_token_price(raw_json: dict | None) -> float | None:
+    if not raw_json:
+        return None
+    return first_outcome_price(raw_json)
+
+
+@app.get("/market-data")
+def list_market_data(
+    limit: int = 50,
+    source: str | None = None,
+    q: str | None = None,
+    session: Session = Depends(get_session),
+):
+    limit = min(max(limit, 1), 200)
+    query = select(MarketData, Source.name).join(Source, MarketData.source_id == Source.id)
+
+    if source:
+        source_filter = Source.name == source
+        if source.isdigit():
+            source_filter = or_(source_filter, Source.id == int(source))
+        query = query.where(source_filter)
+    if q:
+        query = query.where(
+            or_(
+                MarketData.market_or_asset_id.ilike(f"%{q}%"),
+                cast(MarketData.raw_json, String).ilike(f"%{q}%"),
+            )
+        )
+
+    rows = session.execute(query.order_by(desc(MarketData.timestamp)).limit(limit)).all()
+    return [
+        {
+            "id": row.id,
+            "source_id": row.source_id,
+            "source_name": source_name,
+            "market_or_asset_id": row.market_or_asset_id,
+            "question": _market_question(row.raw_json),
+            "timestamp": row.timestamp,
+            "bid": row.bid,
+            "ask": row.ask,
+            "mid_price": row.mid_price if row.mid_price is not None else _market_token_price(row.raw_json),
+            "volume": row.volume,
+            "spread": row.spread,
+            "open_interest": row.open_interest,
+        }
+        for row, source_name in rows
+    ]
 
 
 @app.get("/fetch-logs")

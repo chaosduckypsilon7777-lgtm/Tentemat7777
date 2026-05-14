@@ -3,11 +3,17 @@ sources:
     name: polymarket_clob
     type: api
     category: market
-    base_url: https://clob.polymarket.com
+    base_url: https://gamma-api.polymarket.com
     enabled: true
     interval_seconds: 10
     rate_limit_per_minute: 120
     priority: 100
+    metadata:
+      limit: 100
+      active: true
+      closed: false
+      order: volume24hr
+      ascending: false
 
   gdelt:
     name: gdelt
