@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from sqlalchemy import String, cast, desc, func, or_, select
+from sqlalchemy import String, cast, desc, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
@@ -24,6 +25,16 @@ async def lifespan(app: FastAPI):
     with SessionLocal() as session:
         for source in sources.values():
             upsert_source(session, source)
+        session.execute(
+            update(FetchLog)
+            .where(FetchLog.status == "running")
+            .values(
+                status="error",
+                error_message="interrupted by restart",
+                finished_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        )
+        session.commit()
 
     scheduler = None
     if get_settings().scheduler_enabled:
@@ -471,7 +482,7 @@ def dashboard():
       const el = document.getElementById("health");
       try {
         const data = await api("/health");
-        el.textContent = `API: ${data.status}, baza: ${data.database}`;
+        el.textContent = `API: ${data.status} · baza: ${data.database} · scheduler: ${data.scheduler}`;
         el.className = "status ok";
       } catch (error) {
         el.textContent = "API niedostepne";
@@ -717,7 +728,11 @@ def dashboard():
 
 @app.get("/health")
 def health(session: Session = Depends(get_session)):
-    return {"status": "ok", **database_health(session)}
+    return {
+        "status": "ok",
+        "scheduler": "aktywny" if get_settings().scheduler_enabled else "wyłączony",
+        **database_health(session),
+    }
 
 
 @app.get("/sources")

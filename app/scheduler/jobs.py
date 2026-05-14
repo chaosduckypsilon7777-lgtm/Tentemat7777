@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -9,18 +10,29 @@ from app.storage.postgres import SessionLocal
 
 logger = logging.getLogger(__name__)
 
+_STAGGER_SECONDS = 15
+
 
 def run_source_job(source_name: str) -> None:
-    sources = load_sources()
-    source = sources[source_name]
-    with SessionLocal() as session:
-        result = asyncio.run(FetchingEngine(session).fetch_source(source))
-        logger.info("source fetched", extra=result)
+    try:
+        sources = load_sources()
+        source = sources[source_name]
+        with SessionLocal() as session:
+            result = asyncio.run(FetchingEngine(session).fetch_source(source))
+        logger.info(
+            "fetch completed: %s  status=%s  items=%s",
+            source_name,
+            result["status"],
+            result["items_fetched"],
+        )
+    except Exception:
+        logger.exception("unhandled error in scheduled job for %s", source_name)
 
 
 def build_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone="UTC")
-    for source in load_sources().values():
+    sources = sorted(load_sources().values(), key=lambda s: s.priority, reverse=True)
+    for i, source in enumerate(sources):
         scheduler.add_job(
             run_source_job,
             "interval",
@@ -30,6 +42,6 @@ def build_scheduler() -> BackgroundScheduler:
             replace_existing=True,
             max_instances=1,
             coalesce=True,
+            next_run_time=datetime.now(UTC) + timedelta(seconds=i * _STAGGER_SECONDS),
         )
     return scheduler
-

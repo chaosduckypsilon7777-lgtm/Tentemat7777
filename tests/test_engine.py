@@ -129,6 +129,19 @@ def test_strip_html_removes_tags_and_collapses_whitespace():
     assert _strip_html("no tags here") == "no tags here"
 
 
+def test_build_scheduler_staggers_first_runs():
+    from datetime import UTC, datetime
+
+    from app.scheduler.jobs import _STAGGER_SECONDS, build_scheduler
+
+    scheduler = build_scheduler()
+    jobs = scheduler.get_jobs()
+    assert len(jobs) > 1
+    run_times = sorted(j.next_run_time for j in jobs)
+    gap = (run_times[-1] - run_times[0]).total_seconds()
+    assert gap >= _STAGGER_SECONDS * (len(jobs) - 1) - 1  # allow 1s tolerance
+
+
 def test_normalize_news_strips_html_from_rss_summary():
     payload = {
         "title": "SEC Proposes New Rules",
