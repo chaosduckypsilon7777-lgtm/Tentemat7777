@@ -1,0 +1,60 @@
+sources:
+  polymarket_clob:
+    name: polymarket_clob
+    type: api
+    category: market
+    base_url: https://clob.polymarket.com
+    enabled: true
+    interval_seconds: 10
+    rate_limit_per_minute: 120
+    priority: 100
+
+  gdelt:
+    name: gdelt
+    type: api
+    category: news
+    base_url: https://api.gdeltproject.org/api/v2
+    enabled: true
+    interval_seconds: 300
+    rate_limit_per_minute: 60
+    priority: 80
+    metadata:
+      query: market OR economy OR election
+      maxrecords: 10
+
+  fred:
+    name: fred
+    type: api
+    category: macro
+    base_url: https://api.stlouisfed.org/fred
+    enabled: true
+    interval_seconds: 86400
+    rate_limit_per_minute: 30
+    priority: 50
+    metadata:
+      series:
+        - FEDFUNDS
+        - CPIAUCSL
+        - UNRATE
+
+  sec_edgar:
+    name: sec_edgar
+    type: api
+    category: event
+    base_url: https://data.sec.gov
+    enabled: true
+    interval_seconds: 3600
+    rate_limit_per_minute: 10
+    priority: 60
+    metadata:
+      cik: "0000320193"
+
+  rss_official:
+    name: rss_official
+    type: rss
+    category: news
+    base_url: https://www.sec.gov/news/pressreleases.rss
+    enabled: true
+    interval_seconds: 600
+    rate_limit_per_minute: 30
+    priority: 40
