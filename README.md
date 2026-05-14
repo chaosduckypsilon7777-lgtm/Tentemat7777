@@ -1,50 +1,106 @@
 # Information Engine
 
-Silnik pozyskiwania informacji dla agenta analitycznego. Projekt obejmuje pobieranie danych ze zrodel zewnetrznych, zapis surowych odpowiedzi, normalizacje, walidacje, deduplikacje, monitoring i wewnetrzne API.
+Silnik pozyskiwania i normalizacji danych zewnętrznych dla agenta analitycznego. Pobiera dane z pięciu źródeł, zapisuje surowe odpowiedzi, normalizuje, deduplikuje i udostępnia przez wewnętrzne API z dashboardem.
 
-## Zakres MVP
+## Źródła danych
 
-- rejestr zrodel w `app/config/sources.yaml`,
-- konektory: Polymarket, GDELT, FRED, SEC EDGAR i RSS,
-- fetchery dla newsow, danych rynkowych, makro i eventow,
-- zapis `sources`, `raw_items`, `normalized_items`, `market_data`, `fetch_logs`,
-- deduplikacja po `external_id`, `url` i hashu tresci,
-- wewnetrzne API FastAPI,
-- scheduler APScheduler.
+| Źródło | Typ | Interwał | Wymaga klucza |
+|---|---|---|---|
+| Polymarket | dane rynkowe | 10 s | nie |
+| GDELT | newsy | 5 min | nie |
+| FRED | makro (Fed, CPI, UNRATE) | 1 dzień | tak — FRED_API_KEY |
+| SEC EDGAR | eventy (filingi) | 1 godz. | nie (wymaga User-Agent) |
+| RSS (SEC) | newsy | 10 min | nie |
+
+## Wymagania
+
+- Python 3.11+
+- [uv](https://github.com/astral-sh/uv) (menadżer pakietów)
 
 ## Uruchomienie lokalne
 
-1. Utworz srodowisko i zainstaluj zaleznosci:
+### 1. Sklonuj i przejdź do katalogu
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e ".[dev]"
+git clone https://github.com/chaosduckypsilon7777-lgtm/Tentemat7777.git
+cd Tentemat7777
 ```
 
-2. Skopiuj konfiguracje:
+### 2. Skonfiguruj środowisko
 
 ```bash
-copy .env.example .env
+cp .env.example .env
 ```
 
-3. Uruchom API:
+Otwórz `.env` i ustaw:
+- `FRED_API_KEY` — darmowy klucz z [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html)
+- `SEC_USER_AGENT` — zmień e-mail na swój (wymóg SEC)
+
+### 3. Uruchom API
 
 ```bash
-uvicorn app.api.main:app --reload
+uv run uvicorn app.api.main:app --reload
 ```
 
-Domyslnie projekt uzywa lokalnego pliku SQLite, zeby MVP startowalo bez infrastruktury. Dla PostgreSQL ustaw `DATABASE_URL` w `.env`.
+Dashboard dostępny pod `http://localhost:8000`.
 
-## Przydatne endpointy
+Przy pierwszym starcie aplikacja automatycznie tworzy bazę SQLite i tabele.
 
-- `GET /health` - stan aplikacji,
-- `GET /sources` - lista zrodel,
-- `POST /fetch/{source_name}` - reczne pobranie jednego zrodla,
-- `GET /items` - ostatnie znormalizowane rekordy,
-- `GET /fetch-logs` - historia pobran.
+### 4. Uruchom testy
 
-## Infrastruktura
+```bash
+uv run --with pytest pytest tests/ -v
+```
 
-Plik `docker-compose.yml` zawiera PostgreSQL i Redis dla srodowiska docelowego. TimescaleDB mozna wlaczyc przez zamiane obrazu PostgreSQL na `timescale/timescaledb`.
+## Struktura danych
 
+```
+sources          — rejestr skonfigurowanych źródeł
+raw_items        — surowe odpowiedzi API (deduplikacja po hash + external_id)
+normalized_items — znormalizowane rekordy: news, event, macro
+market_data      — dane rynkowe (Polymarket)
+fetch_logs       — historia każdego fetcha: status, czas, błąd
+```
+
+## API
+
+| Endpoint | Opis |
+|---|---|
+| `GET /` | Dashboard (HTML) |
+| `GET /health` | Stan API, bazy i schedulera |
+| `GET /sources` | Lista źródeł |
+| `GET /sources/stats` | Źródła z licznikiem rekordów i ostatnim fetchem |
+| `POST /fetch/{source}` | Ręczne pobranie jednego źródła |
+| `GET /items` | Znormalizowane rekordy (news, event, macro) |
+| `GET /market-data` | Dane rynkowe |
+| `GET /fetch-logs` | Historia pobierań |
+| `GET /dashboard/summary` | Statystyki zbiorcze |
+
+### Parametry `/items`
+
+```
+?source=gdelt      filtruj po źródle
+?item_type=macro   filtruj po typie (news / event / macro)
+?q=inflation       szukaj w tytule
+?limit=50          max rekordów (domyślnie 50, max 200)
+```
+
+## Docker (PostgreSQL + Redis)
+
+```bash
+docker-compose up -d
+```
+
+Następnie w `.env` zmień:
+
+```
+DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/information_engine
+```
+
+## Konfiguracja źródeł
+
+Źródła są zdefiniowane w `app/config/sources.yaml`. Każde źródło ma:
+- `enabled` — włącz/wyłącz bez usuwania z konfiguracji
+- `interval_seconds` — jak często scheduler pobiera dane
+- `rate_limit_per_minute` — informacyjny (engine pilnuje backoffu samodzielnie)
+- `metadata` — parametry specyficzne dla źródła (query, series, cik itp.)
