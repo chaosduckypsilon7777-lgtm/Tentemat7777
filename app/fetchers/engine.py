@@ -13,9 +13,10 @@ from sqlalchemy.orm import Session
 from app.config.settings import get_settings
 from app.normalizers.factory import normalize_payload
 from app.normalizers.market_normalizer import normalize_market
+from app.scoring.scorer import SIGNAL_THRESHOLD, score_market_data, score_normalized_item
 from app.sources.base import SourceConfig, SourceConfigurationError
 from app.sources.factory import build_connector
-from app.storage.models import FetchLog, MarketData, NormalizedItem, RawItem, Source
+from app.storage.models import FetchLog, MarketData, NormalizedItem, RawItem, Signal, Source
 from app.storage.postgres import upsert_source
 from app.utils.hashing import stable_hash
 
@@ -128,13 +129,18 @@ class FetchingEngine:
             )
             self.session.add(raw_item)
 
-            if source_config.category == "market":
-                self.session.add(MarketData(source_id=source.id, **normalize_market(record.payload)))
-            else:
-                normalized = normalize_payload(record.payload, source_config)
-                if normalized and self._is_valid_normalized(normalized.title, normalized.url):
-                    self.session.add(
-                        NormalizedItem(
+            try:
+                if source_config.category == "market":
+                    md = MarketData(source_id=source.id, **normalize_market(record.payload))
+                    self.session.add(md)
+                    self.session.flush()
+                    sig = self._score_market(source, md, record.payload, source_config.name)
+                    if sig:
+                        self.session.add(sig)
+                else:
+                    normalized = normalize_payload(record.payload, source_config)
+                    if normalized and self._is_valid_normalized(normalized.title, normalized.url):
+                        ni = NormalizedItem(
                             source_id=source.id,
                             item_type=normalized.item_type,
                             title=normalized.title,
@@ -145,8 +151,11 @@ class FetchingEngine:
                             entities=normalized.entities,
                             metadata_=normalized.metadata,
                         )
-                    )
-            try:
+                        self.session.add(ni)
+                        self.session.flush()
+                        sig = self._score_item(source, ni, normalized, source_config.name)
+                        if sig:
+                            self.session.add(sig)
                 self.session.commit()
                 inserted += 1
             except IntegrityError:
@@ -156,6 +165,37 @@ class FetchingEngine:
     @staticmethod
     def _is_valid_normalized(title: str | None, url: str | None) -> bool:
         return bool(title or url)
+
+    @staticmethod
+    def _score_market(source: Source, md: MarketData, payload: dict, source_name: str) -> Signal | None:
+        result = score_market_data(source_name, md.volume, md.spread)
+        if not result or result.score < SIGNAL_THRESHOLD:
+            return None
+        slug = payload.get("slug")
+        return Signal(
+            source_id=source.id,
+            market_data_id=md.id,
+            score=result.score,
+            signal_type=result.signal_type,
+            title=payload.get("question") or slug,
+            url=f"https://polymarket.com/event/{slug}" if slug else None,
+            score_reason={"rules": result.reasons},
+        )
+
+    @staticmethod
+    def _score_item(source: Source, ni: NormalizedItem, normalized, source_name: str) -> Signal | None:
+        result = score_normalized_item(source_name, ni.item_type, normalized.metadata)
+        if not result or result.score < SIGNAL_THRESHOLD:
+            return None
+        return Signal(
+            source_id=source.id,
+            normalized_item_id=ni.id,
+            score=result.score,
+            signal_type=result.signal_type,
+            title=ni.title,
+            url=ni.url,
+            score_reason={"rules": result.reasons},
+        )
 
     @staticmethod
     def _parse_retry_after(value: str | None) -> int | None:

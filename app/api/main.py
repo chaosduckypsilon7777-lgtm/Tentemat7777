@@ -13,7 +13,7 @@ from app.monitoring.logs import configure_logging
 from app.normalizers.market_normalizer import first_outcome_price
 from app.scheduler.jobs import build_scheduler
 from app.sources.registry import load_sources
-from app.storage.models import FetchLog, MarketData, NormalizedItem, RawItem, Source
+from app.storage.models import FetchLog, MarketData, NormalizedItem, RawItem, Signal, Source
 from app.storage.postgres import SessionLocal, get_session, init_db, upsert_source
 
 
@@ -237,6 +237,27 @@ def dashboard():
     .tab.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
     .tab:hover:not(.active) { color: var(--ink); }
     [hidden] { display: none !important; }
+    .score-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .score-high { background: #d4edda; color: #1a5c2e; }
+    .score-mid  { background: #dbeafe; color: #1d4ed8; }
+    .score-low  { background: #fef3c7; color: #92400e; }
+    .signal-type {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--line);
+      color: var(--muted);
+    }
     @media (max-width: 900px) {
       header { align-items: flex-start; flex-direction: column; }
       main { padding: 14px; }
@@ -286,13 +307,36 @@ def dashboard():
     </div>
 
     <nav class="tabs">
-      <button class="tab active" onclick="switchTab('overview')">Przegląd</button>
+      <button class="tab active" onclick="switchTab('signals')">Sygnały</button>
+      <button class="tab" onclick="switchTab('overview')">Przegląd</button>
       <button class="tab" onclick="switchTab('news')">Newsy i eventy</button>
       <button class="tab" onclick="switchTab('markets')">Rynki</button>
       <button class="tab" onclick="switchTab('macro')">Makro</button>
     </nav>
 
-    <div id="tab-overview">
+    <div id="tab-signals">
+    <section>
+      <div class="section-head">
+        <h2>Sygnały</h2>
+        <div style="display:flex;gap:10px;align-items:center">
+          <label style="flex-direction:row;align-items:center;gap:6px;color:var(--muted);font-size:12px;font-weight:600">
+            Min. score
+            <input type="number" id="minScoreFilter" value="0.45" min="0" max="1" step="0.05"
+              style="width:72px;min-height:28px" oninput="loadSignals()">
+          </label>
+          <span id="signalsCount" class="status">signals</span>
+        </div>
+      </div>
+      <div class="content">
+        <table>
+          <thead><tr><th>Score</th><th>Typ</th><th>Tytuł</th><th>Źródło</th><th>Czas</th></tr></thead>
+          <tbody id="signals"></tbody>
+        </table>
+      </div>
+    </section>
+    </div>
+
+    <div id="tab-overview" hidden>
     <div class="grid">
     <section>
       <div class="section-head">
@@ -409,12 +453,15 @@ def dashboard():
     let marketSearchTimer = null;
     let showOnlyProblems = false;
 
+    const TAB_PREFIX = { signals: "sy", overview: "prze", news: "new", markets: "ry", macro: "ma" };
     function switchTab(name) {
-      document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.textContent.trim().toLowerCase().startsWith(name === "overview" ? "prze" : name === "news" ? "new" : name === "markets" ? "ry" : "ma")));
-      document.getElementById("tab-overview").hidden = name !== "overview";
-      document.getElementById("tab-news").hidden = name !== "news";
-      document.getElementById("tab-markets").hidden = name !== "markets";
-      document.getElementById("tab-macro").hidden = name !== "macro";
+      const prefix = TAB_PREFIX[name];
+      document.querySelectorAll(".tab").forEach(b =>
+        b.classList.toggle("active", b.textContent.trim().toLowerCase().startsWith(prefix))
+      );
+      ["signals", "overview", "news", "markets", "macro"].forEach(t =>
+        document.getElementById("tab-" + t).hidden = t !== name
+      );
     }
 
     function toggleProblems() {
@@ -492,7 +539,7 @@ def dashboard():
 
     async function loadSummary() {
       const data = await api("/dashboard/summary");
-      setStat("totalRecords", data.total_records, "recordsDetail", `${data.normalized_records} normalized, ${data.market_records} market`);
+      setStat("totalRecords", data.total_records, "recordsDetail", `${data.normalized_records} normalized · ${data.market_records} market · ${data.signal_count} sygnałów`);
       setStat("activeSources", data.active_sources, "sourcesTotal", `${data.total_sources} skonfigurowane`);
 
       if (data.last_success) {
@@ -631,6 +678,42 @@ def dashboard():
       if (!rows.length) emptyRow(body, 4, "Brak rekordow dla wybranych filtrow");
     }
 
+    function scoreClass(score) {
+      if (score >= 0.80) return "score-high";
+      if (score >= 0.60) return "score-mid";
+      return "score-low";
+    }
+
+    function fmtSignalType(type) {
+      const map = { important: "Ważny", market_watch: "Rynek", macro_alert: "Makro", news: "News", event: "Event" };
+      return map[type] || type;
+    }
+
+    async function loadSignals() {
+      const minScore = parseFloat(document.getElementById("minScoreFilter").value) || 0.45;
+      const rows = await api(`/signals?limit=50&min_score=${minScore}`);
+      const body = document.getElementById("signals");
+      body.innerHTML = "";
+      for (const row of rows) {
+        const safeTitle = escapeHTML(row.title || "-");
+        const title = row.url
+          ? `<a href="${escapeHTML(row.url)}" target="_blank" rel="noreferrer">${safeTitle}</a>`
+          : safeTitle;
+        const reasons = (row.score_reason?.rules || []).join(", ");
+        body.insertAdjacentHTML("beforeend", `
+          <tr>
+            <td><span class="score-badge ${scoreClass(row.score)}" title="${escapeHTML(reasons)}">${row.score.toFixed(2)}</span></td>
+            <td><span class="signal-type">${escapeHTML(fmtSignalType(row.signal_type))}</span></td>
+            <td class="title-cell">${title}</td>
+            <td>${escapeHTML(row.source_name || "-")}</td>
+            <td>${fmtDate(row.created_at)}</td>
+          </tr>
+        `);
+      }
+      document.getElementById("signalsCount").textContent = `${rows.length} sygnałów`;
+      if (!rows.length) emptyRow(body, 5, "Brak sygnałów dla podanego progu");
+    }
+
     function queueItemsLoad() {
       clearTimeout(itemSearchTimer);
       itemSearchTimer = setTimeout(loadItems, 250);
@@ -712,6 +795,7 @@ def dashboard():
         loadSources(),
         loadItemTypes(),
         loadLogs(),
+        loadSignals(),
         loadItems(),
         loadMarkets(),
         loadMacro(),
@@ -802,6 +886,7 @@ def dashboard_summary(session: Session = Depends(get_session)):
     total_records = session.scalar(select(func.count(RawItem.id))) or 0
     normalized_records = session.scalar(select(func.count(NormalizedItem.id))) or 0
     market_records = session.scalar(select(func.count(MarketData.id))) or 0
+    signal_count = session.scalar(select(func.count(Signal.id))) or 0
     total_sources = session.scalar(select(func.count(Source.id))) or 0
     active_sources = session.scalar(
         select(func.count(Source.id)).where(Source.is_active.is_(True))
@@ -826,6 +911,7 @@ def dashboard_summary(session: Session = Depends(get_session)):
         "total_records": total_records,
         "normalized_records": normalized_records,
         "market_records": market_records,
+        "signal_count": signal_count,
         "total_sources": total_sources,
         "active_sources": active_sources,
         "last_success": _fetch_log_payload(*last_success) if last_success else None,
@@ -946,6 +1032,41 @@ def list_market_data(
             "volume": row.volume,
             "spread": row.spread,
             "open_interest": row.open_interest,
+        }
+        for row, source_name in rows
+    ]
+
+
+@app.get("/signals")
+def list_signals(
+    limit: int = 50,
+    min_score: float = 0.45,
+    signal_type: str | None = None,
+    session: Session = Depends(get_session),
+):
+    limit = min(max(limit, 1), 200)
+    query = (
+        select(Signal, Source.name)
+        .join(Source, Signal.source_id == Source.id)
+        .where(Signal.score >= min_score)
+    )
+    if signal_type:
+        query = query.where(Signal.signal_type == signal_type)
+    rows = session.execute(
+        query.order_by(desc(Signal.score), desc(Signal.created_at)).limit(limit)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "source_name": source_name,
+            "score": row.score,
+            "signal_type": row.signal_type,
+            "title": row.title,
+            "url": row.url,
+            "score_reason": row.score_reason,
+            "normalized_item_id": row.normalized_item_id,
+            "market_data_id": row.market_data_id,
+            "created_at": row.created_at,
         }
         for row, source_name in rows
     ]

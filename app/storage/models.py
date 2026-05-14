@@ -88,3 +88,24 @@ class FetchLog(Base):
     items_fetched: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class Signal(Base):
+    __tablename__ = "signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), index=True)
+    normalized_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("normalized_items.id"), nullable=True, index=True
+    )
+    market_data_id: Mapped[int | None] = mapped_column(
+        ForeignKey("market_data.id"), nullable=True, index=True
+    )
+    score: Mapped[float] = mapped_column(Float, index=True)
+    signal_type: Mapped[str] = mapped_column(String(40), index=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    score_reason: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True
+    )

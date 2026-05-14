@@ -158,6 +158,7 @@ def test_gdelt_url_dedup_skips_same_url_different_payload(monkeypatch):
     class FakeSession:
         def scalar(self, q): return 1 if stored else None
         def add(self, obj): stored.append(obj)
+        def flush(self): pass
         def commit(self): committed.append(1)
         def rollback(self): pass
         def scalars(self, q): return FakeQuery()
