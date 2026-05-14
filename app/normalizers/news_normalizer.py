@@ -1,8 +1,14 @@
+import re
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 
 from app.normalizers.base import NormalizedRecord
+
+
+def _strip_html(text: str) -> str:
+    clean = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", clean).strip()
 
 
 def parse_datetime(value: Any) -> datetime | None:
@@ -29,6 +35,8 @@ def parse_datetime(value: Any) -> datetime | None:
 def normalize_news(payload: dict[str, Any], source_name: str) -> NormalizedRecord:
     title = payload.get("title") or payload.get("headline")
     content = payload.get("summary") or payload.get("description")
+    if content:
+        content = _strip_html(str(content)) or None
     if not content:
         domain = payload.get("domain") or payload.get("sourcecountry")
         if domain:

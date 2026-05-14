@@ -7,7 +7,9 @@ import pytest
 from app.config.settings import get_settings
 from app.fetchers.engine import FetchingEngine
 from app.normalizers.event_normalizer import normalize_event
+from app.normalizers.macro_normalizer import normalize_macro
 from app.normalizers.market_normalizer import first_outcome_price, normalize_market
+from app.normalizers.news_normalizer import _strip_html, normalize_news
 from app.sources.base import SourceConfig, SourceConfigurationError
 from app.sources.fred import FredConnector
 from app.sources.sec_edgar import sec_filing_url
@@ -107,3 +109,32 @@ def test_fetch_retry_does_not_wrap_configuration_errors(monkeypatch):
 
     with pytest.raises(SourceConfigurationError, match="FRED_API_KEY"):
         asyncio.run(engine._fetch_with_retry(source))
+
+
+def test_normalize_macro_uses_human_readable_label():
+    result = normalize_macro({"series_id": "FEDFUNDS", "date": "2026-04-01", "value": "3.64"}, "fred")
+    assert result.title == "Federal Funds Rate — 2026-04-01"
+    assert result.metadata["series_url"] == "https://fred.stlouisfed.org/series/FEDFUNDS"
+    assert result.item_type == "macro"
+
+
+def test_normalize_macro_falls_back_to_series_id_for_unknown():
+    result = normalize_macro({"series_id": "CUSTOM123", "date": "2026-01-01", "value": "42"}, "fred")
+    assert result.title == "CUSTOM123 — 2026-01-01"
+
+
+def test_strip_html_removes_tags_and_collapses_whitespace():
+    assert _strip_html("<p>Hello <b>world</b></p>") == "Hello world"
+    assert _strip_html("  <a href='x'>link</a>  text  ") == "link text"
+    assert _strip_html("no tags here") == "no tags here"
+
+
+def test_normalize_news_strips_html_from_rss_summary():
+    payload = {
+        "title": "SEC Proposes New Rules",
+        "summary": "<p>The SEC today proposed <a href='...'>new rules</a> for disclosure.</p>",
+        "link": "https://www.sec.gov/news/1",
+    }
+    result = normalize_news(payload, "rss_official")
+    assert "<" not in (result.content or "")
+    assert "new rules" in (result.content or "")

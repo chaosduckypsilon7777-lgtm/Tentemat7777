@@ -677,9 +677,13 @@ def dashboard():
       for (const row of rows) {
         const seriesId = row.metadata?.series_id || row.title?.split(" ")[0] || "-";
         const value = row.metadata?.value ?? row.content ?? "-";
+        const seriesUrl = row.metadata?.series_url;
+        const seriesCell = seriesUrl
+          ? `<a href="${escapeHTML(seriesUrl)}" target="_blank" rel="noreferrer"><strong>${escapeHTML(seriesId)}</strong></a>`
+          : `<strong>${escapeHTML(seriesId)}</strong>`;
         body.insertAdjacentHTML("beforeend", `
           <tr>
-            <td><strong>${escapeHTML(seriesId)}</strong></td>
+            <td>${seriesCell}</td>
             <td class="number-cell">${escapeHTML(String(value))}</td>
             <td>${fmtDate(row.published_at)}</td>
             <td>${escapeHTML(row.source_name || "-")}</td>
