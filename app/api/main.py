@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
@@ -11,7 +11,7 @@ from app.monitoring.healthcheck import database_health
 from app.monitoring.logs import configure_logging
 from app.scheduler.jobs import build_scheduler
 from app.sources.registry import load_sources
-from app.storage.models import FetchLog, NormalizedItem, Source
+from app.storage.models import FetchLog, MarketData, NormalizedItem, RawItem, Source
 from app.storage.postgres import SessionLocal, get_session, init_db, upsert_source
 
 
@@ -57,6 +57,7 @@ def dashboard():
       --green: #16833a;
       --red: #c93c37;
       --amber: #a15c00;
+      --soft: #fbfcff;
     }
     * { box-sizing: border-box; }
     body {
@@ -76,6 +77,27 @@ def dashboard():
     }
     h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
     main { padding: 22px 28px 36px; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 13px 14px;
+      min-height: 86px;
+    }
+    .stat-label { color: var(--muted); font-size: 12px; font-weight: 600; }
+    .stat-value { margin-top: 6px; font-size: 25px; font-weight: 750; }
+    .stat-detail {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
     .grid {
       display: grid;
       grid-template-columns: 1.1fr 1fr;
@@ -105,7 +127,7 @@ def dashboard():
       border: 1px solid var(--line);
       color: var(--muted);
       font-size: 13px;
-      background: #fbfcff;
+      background: var(--soft);
     }
     .ok { color: var(--green); }
     .error { color: var(--red); }
@@ -122,6 +144,31 @@ def dashboard():
     }
     button:disabled { opacity: .55; cursor: progress; }
     .content { padding: 12px 16px 16px; }
+    .filters {
+      display: grid;
+      grid-template-columns: minmax(160px, 1fr) minmax(140px, .8fr) minmax(220px, 1.4fr) auto;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    input, select {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft);
+      color: var(--ink);
+      padding: 6px 9px;
+      font: inherit;
+      font-size: 13px;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -140,13 +187,32 @@ def dashboard():
     a { color: var(--blue); text-decoration: none; }
     .muted { color: var(--muted); }
     .title-cell { max-width: 640px; }
+    .error-detail {
+      display: block;
+      max-width: 380px;
+      margin-top: 3px;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+      max-height: 4.2em;
+      overflow: hidden;
+    }
+    .empty {
+      color: var(--muted);
+      text-align: center;
+      padding: 18px 8px;
+    }
     @media (max-width: 900px) {
       header { align-items: flex-start; flex-direction: column; }
       main { padding: 14px; }
+      .stats { grid-template-columns: 1fr 1fr; }
       .grid { grid-template-columns: 1fr; }
       .wide { grid-column: auto; }
+      .filters { grid-template-columns: 1fr; }
       table { font-size: 12px; }
       th, td { padding: 8px 6px; }
+    }
+    @media (max-width: 560px) {
+      .stats { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -159,7 +225,31 @@ def dashboard():
     <div id="health" class="status">Sprawdzanie...</div>
   </header>
 
-  <main class="grid">
+  <main>
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">Rekordy</div>
+        <div id="totalRecords" class="stat-value">-</div>
+        <div id="recordsDetail" class="stat-detail">raw_items</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Aktywne zrodla</div>
+        <div id="activeSources" class="stat-value">-</div>
+        <div id="sourcesTotal" class="stat-detail">sources</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Ostatni sukces</div>
+        <div id="lastSuccess" class="stat-value">-</div>
+        <div id="lastSuccessDetail" class="stat-detail">-</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Ostatni blad</div>
+        <div id="lastError" class="stat-value">-</div>
+        <div id="lastErrorDetail" class="stat-detail">-</div>
+      </div>
+    </div>
+
+    <div class="grid">
     <section>
       <div class="section-head">
         <h2>Zrodla</h2>
@@ -181,7 +271,7 @@ def dashboard():
       </div>
       <div class="content">
         <table>
-          <thead><tr><th>Zrodlo</th><th>Status</th><th>Rekordy</th><th>Czas</th></tr></thead>
+          <thead><tr><th>Zrodlo</th><th>Status</th><th>Rekordy</th><th>Czas</th><th>Blad</th></tr></thead>
           <tbody id="logs"></tbody>
         </table>
       </div>
@@ -190,19 +280,40 @@ def dashboard():
     <section class="wide">
       <div class="section-head">
         <h2>Ostatnie rekordy</h2>
-        <span class="status">normalized_items</span>
+        <span id="itemsCount" class="status">normalized_items</span>
       </div>
       <div class="content">
+        <div class="filters">
+          <label>
+            Zrodlo
+            <select id="sourceFilter" onchange="loadItems()">
+              <option value="">Wszystkie</option>
+            </select>
+          </label>
+          <label>
+            Typ
+            <select id="typeFilter" onchange="loadItems()">
+              <option value="">Wszystkie</option>
+            </select>
+          </label>
+          <label>
+            Szukaj w tytule
+            <input id="searchFilter" type="search" placeholder="np. inflation, SEC, market" oninput="queueItemsLoad()">
+          </label>
+          <button onclick="resetFilters()">Wyczysc</button>
+        </div>
         <table>
           <thead><tr><th>Typ</th><th>Tytul</th><th>Publikacja</th><th>Zrodlo</th></tr></thead>
           <tbody id="items"></tbody>
         </table>
       </div>
     </section>
+    </div>
   </main>
 
   <script>
     const sourceNames = new Map();
+    let itemSearchTimer = null;
 
     async function api(path, options) {
       const response = await fetch(path, options);
@@ -213,6 +324,32 @@ def dashboard():
     function fmtDate(value) {
       if (!value) return "-";
       return new Date(value).toLocaleString("pl-PL");
+    }
+
+    function escapeHTML(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[char]));
+    }
+
+    function emptyRow(target, colspan, text) {
+      target.innerHTML = `<tr><td class="empty" colspan="${colspan}">${escapeHTML(text)}</td></tr>`;
+    }
+
+    function setStat(id, value, detailId, detail) {
+      document.getElementById(id).textContent = value;
+      if (detailId) document.getElementById(detailId).textContent = detail || "-";
+    }
+
+    function compactError(value) {
+      if (!value) return "-";
+      const firstLine = String(value).split("\\n")[0];
+      if (firstLine.includes("429 Too Many Requests")) return "429 Too Many Requests";
+      return firstLine.length > 140 ? `${firstLine.slice(0, 137)}...` : firstLine;
     }
 
     async function loadHealth() {
@@ -227,27 +364,62 @@ def dashboard():
       }
     }
 
+    async function loadSummary() {
+      const data = await api("/dashboard/summary");
+      setStat("totalRecords", data.total_records, "recordsDetail", `${data.normalized_records} normalized, ${data.market_records} market`);
+      setStat("activeSources", data.active_sources, "sourcesTotal", `${data.total_sources} skonfigurowane`);
+
+      if (data.last_success) {
+        setStat("lastSuccess", fmtDate(data.last_success.finished_at || data.last_success.started_at), "lastSuccessDetail", data.last_success.source_name);
+      } else {
+        setStat("lastSuccess", "-", "lastSuccessDetail", "brak udanych pobran");
+      }
+
+      if (data.last_error) {
+        setStat("lastError", fmtDate(data.last_error.finished_at || data.last_error.started_at), "lastErrorDetail", `${data.last_error.source_name}: ${data.last_error.error_message || data.last_error.status}`);
+      } else {
+        setStat("lastError", "-", "lastErrorDetail", "brak bledow");
+      }
+    }
+
     async function loadSources() {
       const rows = await api("/sources");
       const body = document.getElementById("sources");
       const actions = document.getElementById("sourceActions");
+      const sourceFilter = document.getElementById("sourceFilter");
+      const selectedSource = sourceFilter.value;
       body.innerHTML = "";
       actions.innerHTML = "";
+      sourceFilter.innerHTML = `<option value="">Wszystkie</option>`;
       sourceNames.clear();
       for (const row of rows) {
         sourceNames.set(row.id, row.name);
         body.insertAdjacentHTML("beforeend", `
           <tr>
-            <td>${row.name}</td>
-            <td>${row.category}</td>
+            <td>${escapeHTML(row.name)}</td>
+            <td>${escapeHTML(row.category)}</td>
             <td class="${row.is_active ? "ok" : "warn"}">${row.is_active ? "aktywne" : "wylaczone"}</td>
           </tr>
         `);
+        sourceFilter.insertAdjacentHTML("beforeend", `<option value="${escapeHTML(row.name)}">${escapeHTML(row.name)}</option>`);
         const button = document.createElement("button");
         button.textContent = `Pobierz ${row.name}`;
         button.onclick = () => fetchSource(row.name, button);
         actions.appendChild(button);
       }
+      sourceFilter.value = [...sourceFilter.options].some((option) => option.value === selectedSource) ? selectedSource : "";
+      if (!rows.length) emptyRow(body, 3, "Brak zrodel");
+    }
+
+    async function loadItemTypes() {
+      const rows = await api("/item-types");
+      const typeFilter = document.getElementById("typeFilter");
+      const selectedType = typeFilter.value;
+      typeFilter.innerHTML = `<option value="">Wszystkie</option>`;
+      for (const row of rows) {
+        typeFilter.insertAdjacentHTML("beforeend", `<option value="${escapeHTML(row)}">${escapeHTML(row)}</option>`);
+      }
+      typeFilter.value = [...typeFilter.options].some((option) => option.value === selectedType) ? selectedType : "";
     }
 
     async function fetchSource(name, button) {
@@ -271,38 +443,68 @@ def dashboard():
       const body = document.getElementById("logs");
       body.innerHTML = "";
       for (const row of rows) {
-        const statusClass = row.status === "success" ? "ok" : "error";
+        const statusClass = row.status === "success" ? "ok" : (row.status === "rate_limited" ? "warn" : "error");
+        const errorText = row.error_message
+          ? `<span class="error-detail" title="${escapeHTML(row.error_message)}">${escapeHTML(compactError(row.error_message))}</span>`
+          : "-";
         body.insertAdjacentHTML("beforeend", `
           <tr>
-            <td>${sourceNames.get(row.source_id) || row.source_id}</td>
-            <td class="${statusClass}">${row.status}</td>
+            <td>${escapeHTML(row.source_name || sourceNames.get(row.source_id) || row.source_id)}</td>
+            <td class="${statusClass}">${escapeHTML(row.status)}</td>
             <td>${row.items_fetched}</td>
             <td>${fmtDate(row.started_at)}</td>
+            <td>${errorText}</td>
           </tr>
         `);
       }
+      if (!rows.length) emptyRow(body, 5, "Brak logow pobran");
     }
 
     async function loadItems() {
-      const rows = await api("/items?limit=20");
+      const params = new URLSearchParams({ limit: "50" });
+      const source = document.getElementById("sourceFilter").value;
+      const itemType = document.getElementById("typeFilter").value;
+      const query = document.getElementById("searchFilter").value.trim();
+      if (source) params.set("source", source);
+      if (itemType) params.set("item_type", itemType);
+      if (query) params.set("q", query);
+
+      const rows = await api(`/items?${params.toString()}`);
       const body = document.getElementById("items");
       body.innerHTML = "";
       for (const row of rows) {
-        const title = row.url ? `<a href="${row.url}" target="_blank" rel="noreferrer">${row.title || row.url}</a>` : (row.title || "-");
+        const safeTitle = escapeHTML(row.title || row.url || "-");
+        const title = row.url ? `<a href="${escapeHTML(row.url)}" target="_blank" rel="noreferrer">${safeTitle}</a>` : safeTitle;
         body.insertAdjacentHTML("beforeend", `
           <tr>
-            <td>${row.item_type}</td>
+            <td>${escapeHTML(row.item_type)}</td>
             <td class="title-cell">${title}</td>
             <td>${fmtDate(row.published_at)}</td>
-            <td>${sourceNames.get(row.source_id) || row.source_id}</td>
+            <td>${escapeHTML(row.source_name || sourceNames.get(row.source_id) || row.source_id)}</td>
           </tr>
         `);
       }
+      document.getElementById("itemsCount").textContent = `${rows.length} rekordow`;
+      if (!rows.length) emptyRow(body, 4, "Brak rekordow dla wybranych filtrow");
+    }
+
+    function queueItemsLoad() {
+      clearTimeout(itemSearchTimer);
+      itemSearchTimer = setTimeout(loadItems, 250);
+    }
+
+    function resetFilters() {
+      document.getElementById("sourceFilter").value = "";
+      document.getElementById("typeFilter").value = "";
+      document.getElementById("searchFilter").value = "";
+      loadItems();
     }
 
     async function loadAll() {
       await loadHealth();
+      await loadSummary();
       await loadSources();
+      await loadItemTypes();
       await loadLogs();
       await loadItems();
     }
@@ -336,6 +538,56 @@ def list_sources(session: Session = Depends(get_session)):
     ]
 
 
+def _fetch_log_payload(row: FetchLog, source_name: str | None = None):
+    return {
+        "id": row.id,
+        "source_id": row.source_id,
+        "source_name": source_name,
+        "started_at": row.started_at,
+        "finished_at": row.finished_at,
+        "status": row.status,
+        "items_fetched": row.items_fetched,
+        "error_message": row.error_message,
+        "latency_ms": row.latency_ms,
+    }
+
+
+@app.get("/dashboard/summary")
+def dashboard_summary(session: Session = Depends(get_session)):
+    total_records = session.scalar(select(func.count(RawItem.id))) or 0
+    normalized_records = session.scalar(select(func.count(NormalizedItem.id))) or 0
+    market_records = session.scalar(select(func.count(MarketData.id))) or 0
+    total_sources = session.scalar(select(func.count(Source.id))) or 0
+    active_sources = session.scalar(
+        select(func.count(Source.id)).where(Source.is_active.is_(True))
+    ) or 0
+
+    last_success = session.execute(
+        select(FetchLog, Source.name)
+        .join(Source, FetchLog.source_id == Source.id)
+        .where(FetchLog.status == "success")
+        .order_by(desc(FetchLog.finished_at), desc(FetchLog.started_at))
+        .limit(1)
+    ).first()
+    last_error = session.execute(
+        select(FetchLog, Source.name)
+        .join(Source, FetchLog.source_id == Source.id)
+        .where(FetchLog.status != "success")
+        .order_by(desc(FetchLog.finished_at), desc(FetchLog.started_at))
+        .limit(1)
+    ).first()
+
+    return {
+        "total_records": total_records,
+        "normalized_records": normalized_records,
+        "market_records": market_records,
+        "total_sources": total_sources,
+        "active_sources": active_sources,
+        "last_success": _fetch_log_payload(*last_success) if last_success else None,
+        "last_error": _fetch_log_payload(*last_error) if last_error else None,
+    }
+
+
 @app.post("/fetch/{source_name}")
 async def fetch_source(source_name: str, session: Session = Depends(get_session)):
     sources = load_sources()
@@ -346,15 +598,34 @@ async def fetch_source(source_name: str, session: Session = Depends(get_session)
 
 
 @app.get("/items")
-def list_items(limit: int = 50, session: Session = Depends(get_session)):
+def list_items(
+    limit: int = 50,
+    source: str | None = None,
+    item_type: str | None = None,
+    q: str | None = None,
+    session: Session = Depends(get_session),
+):
     limit = min(max(limit, 1), 200)
-    rows = session.scalars(
-        select(NormalizedItem).order_by(desc(NormalizedItem.retrieved_at)).limit(limit)
+    query = select(NormalizedItem, Source.name).join(Source, NormalizedItem.source_id == Source.id)
+
+    if source:
+        source_filter = Source.name == source
+        if source.isdigit():
+            source_filter = or_(source_filter, Source.id == int(source))
+        query = query.where(source_filter)
+    if item_type:
+        query = query.where(NormalizedItem.item_type == item_type)
+    if q:
+        query = query.where(NormalizedItem.title.ilike(f"%{q}%"))
+
+    rows = session.execute(
+        query.order_by(desc(NormalizedItem.retrieved_at)).limit(limit)
     ).all()
     return [
         {
             "id": row.id,
             "source_id": row.source_id,
+            "source_name": source_name,
             "item_type": row.item_type,
             "title": row.title,
             "url": row.url,
@@ -363,24 +634,28 @@ def list_items(limit: int = 50, session: Session = Depends(get_session)):
             "language": row.language,
             "metadata": row.metadata_,
         }
-        for row in rows
+        for row, source_name in rows
     ]
+
+
+@app.get("/item-types")
+def list_item_types(session: Session = Depends(get_session)):
+    rows = session.scalars(
+        select(NormalizedItem.item_type).distinct().order_by(NormalizedItem.item_type)
+    ).all()
+    return rows
 
 
 @app.get("/fetch-logs")
 def list_fetch_logs(limit: int = 50, session: Session = Depends(get_session)):
     limit = min(max(limit, 1), 200)
-    rows = session.scalars(select(FetchLog).order_by(desc(FetchLog.started_at)).limit(limit)).all()
+    rows = session.execute(
+        select(FetchLog, Source.name)
+        .join(Source, FetchLog.source_id == Source.id)
+        .order_by(desc(FetchLog.started_at))
+        .limit(limit)
+    ).all()
     return [
-        {
-            "id": row.id,
-            "source_id": row.source_id,
-            "started_at": row.started_at,
-            "finished_at": row.finished_at,
-            "status": row.status,
-            "items_fetched": row.items_fetched,
-            "error_message": row.error_message,
-            "latency_ms": row.latency_ms,
-        }
-        for row in rows
+        _fetch_log_payload(row, source_name)
+        for row, source_name in rows
     ]

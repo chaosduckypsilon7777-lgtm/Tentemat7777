@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 
 import httpx
 from sqlalchemy import select
@@ -17,6 +18,18 @@ from app.sources.factory import build_connector
 from app.storage.models import FetchLog, MarketData, NormalizedItem, RawItem, Source
 from app.storage.postgres import upsert_source
 from app.utils.hashing import stable_hash
+
+
+class RateLimitError(RuntimeError):
+    def __init__(self, source_name: str, retry_after_seconds: int | None):
+        self.source_name = source_name
+        self.retry_after_seconds = retry_after_seconds
+        retry_hint = (
+            f" Retry after {retry_after_seconds} seconds."
+            if retry_after_seconds is not None
+            else ""
+        )
+        super().__init__(f"Rate limited by {source_name}.{retry_hint}")
 
 
 class FetchingEngine:
@@ -37,6 +50,10 @@ class FetchingEngine:
             inserted = self._store_records(source, source_config, records)
             status = "success"
             error_message = None
+        except RateLimitError as exc:
+            inserted = 0
+            status = "rate_limited"
+            error_message = str(exc)
         except Exception as exc:
             inserted = 0
             status = "error"
@@ -61,10 +78,8 @@ class FetchingEngine:
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 if exc.response.status_code == 429:
-                    retry_after = exc.response.headers.get("Retry-After")
-                    delay = float(retry_after) if retry_after and retry_after.isdigit() else 30
-                    await asyncio.sleep(delay)
-                    break
+                    delay = self._parse_retry_after(exc.response.headers.get("Retry-After"))
+                    raise RateLimitError(source_config.name, delay) from exc
             except Exception as exc:
                 last_error = exc
                 await asyncio.sleep(self.settings.fetch_backoff_seconds * (attempt + 1))
@@ -119,3 +134,16 @@ class FetchingEngine:
     @staticmethod
     def _is_valid_normalized(title: str | None, url: str | None) -> bool:
         return bool(title or url)
+
+    @staticmethod
+    def _parse_retry_after(value: str | None) -> int | None:
+        if not value:
+            return None
+        if value.isdigit():
+            return int(value)
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        delay = int((retry_at - datetime.now(retry_at.tzinfo)).total_seconds())
+        return max(delay, 0)
