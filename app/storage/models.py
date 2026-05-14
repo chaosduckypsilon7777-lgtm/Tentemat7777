@@ -106,6 +106,7 @@ class Signal(Base):
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     score_reason: Mapped[dict[str, Any]] = mapped_column(JSON)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True
     )

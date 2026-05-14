@@ -708,7 +708,10 @@ def dashboard():
           <tr>
             <td><span class="score-badge ${scoreClass(row.score)}" title="${escapeHTML(reasons)}">${row.score.toFixed(2)}</span>${confBadge}</td>
             <td><span class="signal-type">${escapeHTML(fmtSignalType(row.signal_type))}</span></td>
-            <td class="title-cell">${title}</td>
+            <td class="title-cell">
+              ${title}
+              ${row.summary ? `<div style="margin-top:3px;font-size:11px;color:var(--muted)">${escapeHTML(row.summary)}</div>` : ""}
+            </td>
             <td>${escapeHTML(row.source_name || "-")}</td>
             <td>${fmtDate(row.created_at)}</td>
           </tr>
@@ -1070,6 +1073,7 @@ def list_signals(
             "score_reason": row.score_reason,
             "normalized_item_id": row.normalized_item_id,
             "market_data_id": row.market_data_id,
+            "summary": row.summary,
             "created_at": row.created_at,
         }
         for row, source_name in rows

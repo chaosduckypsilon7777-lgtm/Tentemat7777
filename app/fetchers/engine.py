@@ -15,6 +15,7 @@ from app.normalizers.factory import normalize_payload
 from app.normalizers.market_normalizer import normalize_market
 from app.scoring.confirmation import apply_confirmation_boost, count_cross_source_confirmations
 from app.scoring.scorer import SIGNAL_THRESHOLD, score_market_data, score_normalized_item
+from app.scoring.summarizer import generate_summary
 from app.sources.base import SourceConfig, SourceConfigurationError
 from app.sources.factory import build_connector
 from app.storage.models import FetchLog, MarketData, NormalizedItem, RawItem, Signal, Source
@@ -137,7 +138,7 @@ class FetchingEngine:
                     self.session.flush()
                     sig = self._score_market(source, md, record.payload, source_config.name)
                     if sig:
-                        sig = self._apply_confirmation(sig, source.id)
+                        sig = self._apply_confirmation(sig, source.id, source_config.name)
                         self.session.add(sig)
                 else:
                     normalized = normalize_payload(record.payload, source_config)
@@ -157,7 +158,7 @@ class FetchingEngine:
                         self.session.flush()
                         sig = self._score_item(source, ni, normalized, source_config.name)
                         if sig:
-                            sig = self._apply_confirmation(sig, source.id)
+                            sig = self._apply_confirmation(sig, source.id, source_config.name)
                             self.session.add(sig)
                 self.session.commit()
                 inserted += 1
@@ -169,11 +170,22 @@ class FetchingEngine:
     def _is_valid_normalized(title: str | None, url: str | None) -> bool:
         return bool(title or url)
 
-    def _apply_confirmation(self, sig: Signal, source_id: int) -> Signal:
+    def _apply_confirmation(self, sig: Signal, source_id: int, source_name: str) -> Signal:
         conf = count_cross_source_confirmations(self.session, sig.title, source_id)
-        boosted_score = apply_confirmation_boost(sig.score, conf)
-        sig.score = boosted_score
+        sig.score = apply_confirmation_boost(sig.score, conf)
         sig.score_reason = {**sig.score_reason, "confirmation_count": conf}
+
+        api_key = self.settings.anthropic_api_key
+        if api_key and sig.score >= self.settings.signal_summary_threshold:
+            reason = ", ".join(sig.score_reason.get("rules", []))
+            sig.summary = generate_summary(
+                title=sig.title,
+                source_name=source_name,
+                signal_type=sig.signal_type,
+                score=sig.score,
+                reason=reason,
+                api_key=api_key,
+            )
         return sig
 
     @staticmethod

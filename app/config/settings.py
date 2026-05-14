@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     fetch_backoff_seconds: float = 1.5
     scheduler_enabled: bool = False
     fred_api_key: str | None = None
+    anthropic_api_key: str | None = None
+    signal_summary_threshold: float = 0.80
     sec_user_agent: str = Field(
         default="information-engine/0.1 contact@example.com",
         description="SEC requires a descriptive User-Agent.",
