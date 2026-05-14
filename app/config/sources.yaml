@@ -27,6 +27,7 @@ sources:
     metadata:
       query: market OR economy OR election
       maxrecords: 10
+      timespan: 15min
 
   fred:
     name: fred

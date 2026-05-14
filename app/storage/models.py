@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
@@ -22,7 +22,7 @@ class Source(Base):
     requires_api_key: Mapped[bool] = mapped_column(Boolean, default=False)
     rate_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
 
     raw_items: Mapped[list[RawItem]] = relationship(back_populates="source")
 
@@ -34,7 +34,7 @@ class RawItem(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), index=True)
     external_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
-    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True)
     raw_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     hash: Mapped[str] = mapped_column(String(64), index=True)
 
@@ -52,7 +52,7 @@ class NormalizedItem(Base):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
-    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True)
     language: Mapped[str | None] = mapped_column(String(20), nullable=True)
     entities: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON, nullable=True)

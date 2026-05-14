@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -46,7 +46,7 @@ def normalize_market(payload: dict[str, Any]) -> dict[str, Any]:
             or payload.get("id")
             or payload.get("question")
         ),
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(UTC).replace(tzinfo=None),
         "bid": bid,
         "ask": ask,
         "mid_price": mid_price,

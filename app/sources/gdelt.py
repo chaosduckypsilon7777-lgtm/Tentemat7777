@@ -10,10 +10,11 @@ class GdeltConnector(HttpConnector):
                 "mode": "ArtList",
                 "format": "json",
                 "maxrecords": self.source.metadata.get("maxrecords", 10),
-                "sort": "HybridRel",
+                "sort": "DateDesc",
+                "timespan": self.source.metadata.get("timespan", "15min"),
             },
         )
-        articles = data.get("articles", [])
+        articles = data.get("articles") or []
         return [
             RawRecord(
                 external_id=article.get("url"),

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -32,14 +32,23 @@ class RateLimitError(RuntimeError):
         super().__init__(f"Rate limited by {source_name}.{retry_hint}")
 
 
+_source_cooldowns: dict[str, datetime] = {}
+_DEFAULT_COOLDOWN_SECONDS = 300
+
+
 class FetchingEngine:
     def __init__(self, session: Session):
         self.session = session
         self.settings = get_settings()
 
     async def fetch_source(self, source_config: SourceConfig) -> dict[str, int | str]:
+        cooldown_until = _source_cooldowns.get(source_config.name)
+        if cooldown_until and datetime.now(UTC).replace(tzinfo=None) < cooldown_until:
+            remaining = int((cooldown_until - datetime.now(UTC).replace(tzinfo=None)).total_seconds())
+            return {"source": source_config.name, "status": "rate_limited", "items_fetched": 0, "cooldown_seconds": remaining}
+
         source = upsert_source(self.session, source_config)
-        started = datetime.utcnow()
+        started = datetime.now(UTC).replace(tzinfo=None)
         log = FetchLog(source_id=source.id, started_at=started, status="running")
         self.session.add(log)
         self.session.commit()
@@ -54,6 +63,8 @@ class FetchingEngine:
             inserted = 0
             status = "rate_limited"
             error_message = str(exc)
+            cooldown_secs = exc.retry_after_seconds or _DEFAULT_COOLDOWN_SECONDS
+            _source_cooldowns[source_config.name] = datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=cooldown_secs)
         except SourceConfigurationError as exc:
             inserted = 0
             status = "needs_config"
@@ -63,7 +74,7 @@ class FetchingEngine:
             status = "error"
             error_message = str(exc)
 
-        log.finished_at = datetime.utcnow()
+        log.finished_at = datetime.now(UTC).replace(tzinfo=None)
         log.status = status
         log.items_fetched = inserted
         log.error_message = error_message
@@ -82,8 +93,13 @@ class FetchingEngine:
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 if exc.response.status_code == 429:
-                    delay = self._parse_retry_after(exc.response.headers.get("Retry-After"))
-                    raise RateLimitError(source_config.name, delay) from exc
+                    retry_after = self._parse_retry_after(exc.response.headers.get("Retry-After"))
+                    if attempt == self.settings.fetch_retry_attempts - 1:
+                        raise RateLimitError(source_config.name, retry_after) from exc
+                    cooldown = retry_after if retry_after is not None else min(
+                        self.settings.fetch_backoff_seconds * 2 ** attempt, 60.0
+                    )
+                    await asyncio.sleep(cooldown)
             except SourceConfigurationError:
                 raise
             except Exception as exc:
@@ -95,11 +111,11 @@ class FetchingEngine:
         inserted = 0
         for record in records:
             payload_hash = stable_hash(record.payload)
+            dedup = RawItem.hash == payload_hash
+            if record.external_id:
+                dedup = or_(dedup, RawItem.external_id == record.external_id)
             exists = self.session.scalar(
-                select(RawItem.id).where(
-                    RawItem.source_id == source.id,
-                    RawItem.hash == payload_hash,
-                )
+                select(RawItem.id).where(RawItem.source_id == source.id, dedup)
             )
             if exists:
                 continue

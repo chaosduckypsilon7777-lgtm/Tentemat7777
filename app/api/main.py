@@ -375,6 +375,17 @@ def dashboard():
       if (detailId) document.getElementById(detailId).textContent = detail || "-";
     }
 
+    function fmtStatus(status) {
+      const map = {
+        success: "sukces",
+        rate_limited: "limit zapytań",
+        needs_config: "brak konfiguracji",
+        error: "błąd",
+        running: "w toku",
+      };
+      return map[status] || status;
+    }
+
     function compactError(value) {
       if (!value) return "-";
       const firstLine = String(value).split("\\n")[0];
@@ -469,7 +480,7 @@ def dashboard():
       button.textContent = `Pobieram ${name}`;
       try {
         const result = await api(`/fetch/${name}`, { method: "POST" });
-        document.getElementById("lastRun").textContent = `${result.source}: ${result.status}, ${result.items_fetched}`;
+        document.getElementById("lastRun").textContent = `${result.source}: ${fmtStatus(result.status)}, ${result.items_fetched} rekordów`;
       } catch (error) {
         document.getElementById("lastRun").textContent = `${name}: blad`;
         document.getElementById("lastRun").className = "status error";
@@ -494,7 +505,7 @@ def dashboard():
         body.insertAdjacentHTML("beforeend", `
           <tr>
             <td>${escapeHTML(row.source_name || sourceNames.get(row.source_id) || row.source_id)}</td>
-            <td class="${statusClass}">${escapeHTML(row.status)}</td>
+            <td class="${statusClass}">${escapeHTML(fmtStatus(row.status))}</td>
             <td>${row.items_fetched}</td>
             <td>${fmtDate(row.started_at)}</td>
             <td>${errorText}</td>
@@ -583,16 +594,19 @@ def dashboard():
     }
 
     async function loadAll() {
-      await loadHealth();
-      await loadSummary();
-      await loadSources();
-      await loadItemTypes();
-      await loadLogs();
-      await loadItems();
-      await loadMarkets();
+      await Promise.all([
+        loadHealth(),
+        loadSummary(),
+        loadSources(),
+        loadItemTypes(),
+        loadLogs(),
+        loadItems(),
+        loadMarkets(),
+      ]);
     }
 
     loadAll();
+    setInterval(loadAll, 30_000);
   </script>
 </body>
 </html>
@@ -655,7 +669,7 @@ def dashboard_summary(session: Session = Depends(get_session)):
     last_error = session.execute(
         select(FetchLog, Source.name)
         .join(Source, FetchLog.source_id == Source.id)
-        .where(FetchLog.status != "success")
+        .where(FetchLog.status.not_in(["success", "running"]))
         .order_by(desc(FetchLog.finished_at), desc(FetchLog.started_at))
         .limit(1)
     ).first()
