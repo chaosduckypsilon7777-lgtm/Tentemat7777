@@ -14,6 +14,7 @@ from app.config.settings import get_settings
 from app.normalizers.factory import normalize_payload
 from app.normalizers.market_normalizer import normalize_market
 from app.scoring.confirmation import apply_confirmation_boost, count_cross_source_confirmations
+from app.scoring.novelty import is_novel, novelty_score_penalty
 from app.scoring.scorer import SIGNAL_THRESHOLD, score_market_data, score_normalized_item
 from app.scoring.summarizer import generate_summary
 from app.sources.base import SourceConfig, SourceConfigurationError
@@ -173,7 +174,10 @@ class FetchingEngine:
     def _apply_confirmation(self, sig: Signal, source_id: int, source_name: str) -> Signal:
         conf = count_cross_source_confirmations(self.session, sig.title, source_id)
         sig.score = apply_confirmation_boost(sig.score, conf)
-        sig.score_reason = {**sig.score_reason, "confirmation_count": conf}
+
+        novel = is_novel(self.session, sig.title, source_id)
+        sig.score = round(sig.score * novelty_score_penalty(novel), 2)
+        sig.score_reason = {**sig.score_reason, "confirmation_count": conf, "novel": novel}
 
         api_key = self.settings.anthropic_api_key
         if api_key and sig.score >= self.settings.signal_summary_threshold:
