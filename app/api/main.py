@@ -700,9 +700,13 @@ def dashboard():
           ? `<a href="${escapeHTML(row.url)}" target="_blank" rel="noreferrer">${safeTitle}</a>`
           : safeTitle;
         const reasons = (row.score_reason?.rules || []).join(", ");
+        const conf = row.score_reason?.confirmation_count || 0;
+        const confBadge = conf > 0
+          ? `<span style="margin-left:5px;color:var(--green);font-size:11px;font-weight:700" title="potwierdzone przez ${conf} inne źródło/a">✓${conf}</span>`
+          : "";
         body.insertAdjacentHTML("beforeend", `
           <tr>
-            <td><span class="score-badge ${scoreClass(row.score)}" title="${escapeHTML(reasons)}">${row.score.toFixed(2)}</span></td>
+            <td><span class="score-badge ${scoreClass(row.score)}" title="${escapeHTML(reasons)}">${row.score.toFixed(2)}</span>${confBadge}</td>
             <td><span class="signal-type">${escapeHTML(fmtSignalType(row.signal_type))}</span></td>
             <td class="title-cell">${title}</td>
             <td>${escapeHTML(row.source_name || "-")}</td>

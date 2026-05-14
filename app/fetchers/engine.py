@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.config.settings import get_settings
 from app.normalizers.factory import normalize_payload
 from app.normalizers.market_normalizer import normalize_market
+from app.scoring.confirmation import apply_confirmation_boost, count_cross_source_confirmations
 from app.scoring.scorer import SIGNAL_THRESHOLD, score_market_data, score_normalized_item
 from app.sources.base import SourceConfig, SourceConfigurationError
 from app.sources.factory import build_connector
@@ -136,6 +137,7 @@ class FetchingEngine:
                     self.session.flush()
                     sig = self._score_market(source, md, record.payload, source_config.name)
                     if sig:
+                        sig = self._apply_confirmation(sig, source.id)
                         self.session.add(sig)
                 else:
                     normalized = normalize_payload(record.payload, source_config)
@@ -155,6 +157,7 @@ class FetchingEngine:
                         self.session.flush()
                         sig = self._score_item(source, ni, normalized, source_config.name)
                         if sig:
+                            sig = self._apply_confirmation(sig, source.id)
                             self.session.add(sig)
                 self.session.commit()
                 inserted += 1
@@ -165,6 +168,13 @@ class FetchingEngine:
     @staticmethod
     def _is_valid_normalized(title: str | None, url: str | None) -> bool:
         return bool(title or url)
+
+    def _apply_confirmation(self, sig: Signal, source_id: int) -> Signal:
+        conf = count_cross_source_confirmations(self.session, sig.title, source_id)
+        boosted_score = apply_confirmation_boost(sig.score, conf)
+        sig.score = boosted_score
+        sig.score_reason = {**sig.score_reason, "confirmation_count": conf}
+        return sig
 
     @staticmethod
     def _score_market(source: Source, md: MarketData, payload: dict, source_name: str) -> Signal | None:
