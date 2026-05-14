@@ -33,6 +33,10 @@ class Connector(Protocol):
         """Fetch raw records from the external source."""
 
 
+class SourceConfigurationError(RuntimeError):
+    pass
+
+
 class HttpConnector:
     def __init__(self, source: SourceConfig, client: httpx.AsyncClient):
         self.source = source
@@ -51,4 +55,3 @@ class HttpConnector:
         )
         response.raise_for_status()
         return response.json()
-

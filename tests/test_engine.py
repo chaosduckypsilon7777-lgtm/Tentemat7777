@@ -1,8 +1,16 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 
+import pytest
+
+from app.config.settings import get_settings
 from app.fetchers.engine import FetchingEngine
+from app.normalizers.event_normalizer import normalize_event
 from app.normalizers.market_normalizer import first_outcome_price, normalize_market
+from app.sources.base import SourceConfig, SourceConfigurationError
+from app.sources.fred import FredConnector
+from app.sources.sec_edgar import sec_filing_url
 from app.utils.hashing import stable_hash
 
 
@@ -46,3 +54,55 @@ def test_normalize_market_reads_gamma_fields():
 
 def test_first_outcome_price_reads_gamma_json_string():
     assert first_outcome_price({"outcomePrices": '["0.12", "0.88"]'}) == 0.12
+
+
+def test_sec_filing_url_uses_archive_path():
+    assert (
+        sec_filing_url("0000320193", "0000320193-25-000079", "aapl-20250927.htm")
+        == "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm"
+    )
+
+
+def test_normalize_sec_event_title_is_readable():
+    normalized = normalize_event(
+        {
+            "entity_name": "Apple Inc.",
+            "form": "10-K",
+            "accession_number": "0000320193-25-000079",
+            "url": "https://www.sec.gov/example",
+        },
+        "sec_edgar",
+    )
+
+    assert normalized.title == "SEC 10-K: Apple Inc. (0000320193-25-000079)"
+    assert normalized.url == "https://www.sec.gov/example"
+
+
+def test_fred_requires_api_key(monkeypatch):
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    get_settings.cache_clear()
+    source = SourceConfig(
+        name="fred",
+        type="api",
+        category="macro",
+        base_url="https://api.stlouisfed.org/fred",
+        metadata={"series": ["FEDFUNDS"]},
+    )
+
+    with pytest.raises(SourceConfigurationError, match="FRED_API_KEY"):
+        asyncio.run(FredConnector(source, client=None).fetch())
+
+    get_settings.cache_clear()
+
+
+def test_fetch_retry_does_not_wrap_configuration_errors():
+    engine = FetchingEngine(session=None)
+    source = SourceConfig(
+        name="fred",
+        type="api",
+        category="macro",
+        base_url="https://api.stlouisfed.org/fred",
+    )
+
+    with pytest.raises(SourceConfigurationError, match="FRED_API_KEY"):
+        asyncio.run(engine._fetch_with_retry(source))

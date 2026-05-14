@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.config.settings import get_settings
 from app.normalizers.factory import normalize_payload
 from app.normalizers.market_normalizer import normalize_market
-from app.sources.base import SourceConfig
+from app.sources.base import SourceConfig, SourceConfigurationError
 from app.sources.factory import build_connector
 from app.storage.models import FetchLog, MarketData, NormalizedItem, RawItem, Source
 from app.storage.postgres import upsert_source
@@ -54,6 +54,10 @@ class FetchingEngine:
             inserted = 0
             status = "rate_limited"
             error_message = str(exc)
+        except SourceConfigurationError as exc:
+            inserted = 0
+            status = "needs_config"
+            error_message = str(exc)
         except Exception as exc:
             inserted = 0
             status = "error"
@@ -80,6 +84,8 @@ class FetchingEngine:
                 if exc.response.status_code == 429:
                     delay = self._parse_retry_after(exc.response.headers.get("Retry-After"))
                     raise RateLimitError(source_config.name, delay) from exc
+            except SourceConfigurationError:
+                raise
             except Exception as exc:
                 last_error = exc
                 await asyncio.sleep(self.settings.fetch_backoff_seconds * (attempt + 1))

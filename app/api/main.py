@@ -485,7 +485,9 @@ def dashboard():
       const body = document.getElementById("logs");
       body.innerHTML = "";
       for (const row of rows) {
-        const statusClass = row.status === "success" ? "ok" : (row.status === "rate_limited" ? "warn" : "error");
+        const statusClass = row.status === "success"
+          ? "ok"
+          : (["rate_limited", "needs_config"].includes(row.status) ? "warn" : "error");
         const errorText = row.error_message
           ? `<span class="error-detail" title="${escapeHTML(row.error_message)}">${escapeHTML(compactError(row.error_message))}</span>`
           : "-";
