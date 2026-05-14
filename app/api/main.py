@@ -337,6 +337,19 @@ def dashboard():
         </table>
       </div>
     </section>
+
+    <section class="wide">
+      <div class="section-head">
+        <h2>Dane makro</h2>
+        <span id="macroCount" class="status">normalized_items / macro</span>
+      </div>
+      <div class="content">
+        <table>
+          <thead><tr><th>Seria</th><th>Wartosc</th><th>Data</th><th>Zrodlo</th></tr></thead>
+          <tbody id="macro"></tbody>
+        </table>
+      </div>
+    </section>
     </div>
   </main>
 
@@ -593,6 +606,26 @@ def dashboard():
       loadMarkets();
     }
 
+    async function loadMacro() {
+      const rows = await api("/items?item_type=macro&limit=100");
+      const body = document.getElementById("macro");
+      body.innerHTML = "";
+      for (const row of rows) {
+        const seriesId = row.metadata?.series_id || row.title?.split(" ")[0] || "-";
+        const value = row.metadata?.value ?? row.content ?? "-";
+        body.insertAdjacentHTML("beforeend", `
+          <tr>
+            <td><strong>${escapeHTML(seriesId)}</strong></td>
+            <td class="number-cell">${escapeHTML(String(value))}</td>
+            <td>${fmtDate(row.published_at)}</td>
+            <td>${escapeHTML(row.source_name || "-")}</td>
+          </tr>
+        `);
+      }
+      document.getElementById("macroCount").textContent = `${rows.length} rekordow`;
+      if (!rows.length) emptyRow(body, 4, "Brak danych makro");
+    }
+
     async function loadAll() {
       await Promise.all([
         loadHealth(),
@@ -602,6 +635,7 @@ def dashboard():
         loadLogs(),
         loadItems(),
         loadMarkets(),
+        loadMacro(),
       ]);
     }
 

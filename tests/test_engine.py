@@ -79,8 +79,8 @@ def test_normalize_sec_event_title_is_readable():
 
 
 def test_fred_requires_api_key(monkeypatch):
-    monkeypatch.delenv("FRED_API_KEY", raising=False)
-    get_settings.cache_clear()
+    from types import SimpleNamespace
+    monkeypatch.setattr("app.sources.fred.get_settings", lambda: SimpleNamespace(fred_api_key=None))
     source = SourceConfig(
         name="fred",
         type="api",
@@ -92,16 +92,17 @@ def test_fred_requires_api_key(monkeypatch):
     with pytest.raises(SourceConfigurationError, match="FRED_API_KEY"):
         asyncio.run(FredConnector(source, client=None).fetch())
 
-    get_settings.cache_clear()
 
-
-def test_fetch_retry_does_not_wrap_configuration_errors():
+def test_fetch_retry_does_not_wrap_configuration_errors(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr("app.sources.fred.get_settings", lambda: SimpleNamespace(fred_api_key=None))
     engine = FetchingEngine(session=None)
     source = SourceConfig(
         name="fred",
         type="api",
         category="macro",
         base_url="https://api.stlouisfed.org/fred",
+        metadata={"series": ["FEDFUNDS"]},
     )
 
     with pytest.raises(SourceConfigurationError, match="FRED_API_KEY"):
