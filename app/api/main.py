@@ -204,6 +204,28 @@ def dashboard():
       text-align: center;
       padding: 18px 8px;
     }
+    .tabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 18px;
+      border-bottom: 2px solid var(--line);
+    }
+    .tab {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      padding: 8px 18px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      cursor: pointer;
+      margin-bottom: -2px;
+    }
+    .tab.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
+    .tab:hover:not(.active) { color: var(--ink); }
+    [hidden] { display: none !important; }
     @media (max-width: 900px) {
       header { align-items: flex-start; flex-direction: column; }
       main { padding: 14px; }
@@ -252,16 +274,26 @@ def dashboard():
       </div>
     </div>
 
+    <nav class="tabs">
+      <button class="tab active" onclick="switchTab('overview')">Przegląd</button>
+      <button class="tab" onclick="switchTab('news')">Newsy i eventy</button>
+      <button class="tab" onclick="switchTab('markets')">Rynki</button>
+      <button class="tab" onclick="switchTab('macro')">Makro</button>
+    </nav>
+
+    <div id="tab-overview">
     <div class="grid">
     <section>
       <div class="section-head">
         <h2>Zrodla</h2>
-        <button onclick="loadAll()">Odswiez</button>
+        <div style="display:flex;gap:8px">
+          <button id="problemsBtn" onclick="toggleProblems()">Tylko problemy</button>
+          <button onclick="loadAll()">Odswiez</button>
+        </div>
       </div>
       <div class="content">
-        <div id="sourceActions" class="actions"></div>
         <table>
-          <thead><tr><th>Nazwa</th><th>Kategoria</th><th>Status</th></tr></thead>
+          <thead><tr><th>Nazwa</th><th>Kategoria</th><th>Rekordy</th><th>Ostatni fetch</th><th></th></tr></thead>
           <tbody id="sources"></tbody>
         </table>
       </div>
@@ -279,10 +311,13 @@ def dashboard():
         </table>
       </div>
     </section>
+    </div>
+    </div>
 
-    <section class="wide">
+    <div id="tab-news" hidden>
+    <section>
       <div class="section-head">
-        <h2>Ostatnie rekordy</h2>
+        <h2>Newsy i eventy</h2>
         <span id="itemsCount" class="status">normalized_items</span>
       </div>
       <div class="content">
@@ -311,8 +346,10 @@ def dashboard():
         </table>
       </div>
     </section>
+    </div>
 
-    <section class="wide">
+    <div id="tab-markets" hidden>
+    <section>
       <div class="section-head">
         <h2>Dane rynkowe</h2>
         <span id="marketsCount" class="status">market_data</span>
@@ -337,8 +374,10 @@ def dashboard():
         </table>
       </div>
     </section>
+    </div>
 
-    <section class="wide">
+    <div id="tab-macro" hidden>
+    <section>
       <div class="section-head">
         <h2>Dane makro</h2>
         <span id="macroCount" class="status">normalized_items / macro</span>
@@ -357,6 +396,23 @@ def dashboard():
     const sourceNames = new Map();
     let itemSearchTimer = null;
     let marketSearchTimer = null;
+    let showOnlyProblems = false;
+
+    function switchTab(name) {
+      document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.textContent.trim().toLowerCase().startsWith(name === "overview" ? "prze" : name === "news" ? "new" : name === "markets" ? "ry" : "ma")));
+      document.getElementById("tab-overview").hidden = name !== "overview";
+      document.getElementById("tab-news").hidden = name !== "news";
+      document.getElementById("tab-markets").hidden = name !== "markets";
+      document.getElementById("tab-macro").hidden = name !== "macro";
+    }
+
+    function toggleProblems() {
+      showOnlyProblems = !showOnlyProblems;
+      const btn = document.getElementById("problemsBtn");
+      btn.textContent = showOnlyProblems ? "Wszystkie zrodla" : "Tylko problemy";
+      btn.style.cssText = showOnlyProblems ? "background:#fde8e8;border-color:#e57373;color:#c93c37" : "";
+      loadSources();
+    }
 
     async function api(path, options) {
       const response = await fetch(path, options);
@@ -442,39 +498,46 @@ def dashboard():
     }
 
     async function loadSources() {
-      const rows = await api("/sources");
+      const rows = await api("/sources/stats");
       const body = document.getElementById("sources");
-      const actions = document.getElementById("sourceActions");
       const sourceFilter = document.getElementById("sourceFilter");
       const marketSourceFilter = document.getElementById("marketSourceFilter");
       const selectedSource = sourceFilter.value;
       const selectedMarketSource = marketSourceFilter.value;
       body.innerHTML = "";
-      actions.innerHTML = "";
       sourceFilter.innerHTML = `<option value="">Wszystkie</option>`;
       marketSourceFilter.innerHTML = `<option value="">Wszystkie</option>`;
       sourceNames.clear();
+      let visibleCount = 0;
       for (const row of rows) {
         sourceNames.set(row.id, row.name);
-        body.insertAdjacentHTML("beforeend", `
-          <tr>
-            <td>${escapeHTML(row.name)}</td>
-            <td>${escapeHTML(row.category)}</td>
-            <td class="${row.is_active ? "ok" : "warn"}">${row.is_active ? "aktywne" : "wylaczone"}</td>
-          </tr>
-        `);
         sourceFilter.insertAdjacentHTML("beforeend", `<option value="${escapeHTML(row.name)}">${escapeHTML(row.name)}</option>`);
         if (row.category === "market") {
           marketSourceFilter.insertAdjacentHTML("beforeend", `<option value="${escapeHTML(row.name)}">${escapeHTML(row.name)}</option>`);
         }
-        const button = document.createElement("button");
-        button.textContent = `Pobierz ${row.name}`;
-        button.onclick = () => fetchSource(row.name, button);
-        actions.appendChild(button);
+        const isProblematic = row.last_status && !["success", "running"].includes(row.last_status);
+        if (showOnlyProblems && !isProblematic) continue;
+        visibleCount++;
+        const statusClass = !row.last_status ? "muted"
+          : row.last_status === "success" ? "ok"
+          : ["rate_limited", "needs_config"].includes(row.last_status) ? "warn"
+          : "error";
+        const lastFetchCell = row.last_fetch_at
+          ? `<span class="${statusClass}">${escapeHTML(fmtStatus(row.last_status))}</span> <span class="muted" style="font-size:11px">${escapeHTML(fmtDate(row.last_fetch_at))}</span>`
+          : `<span class="muted">brak</span>`;
+        body.insertAdjacentHTML("beforeend", `
+          <tr>
+            <td><strong>${escapeHTML(row.name)}</strong></td>
+            <td>${escapeHTML(row.category)}</td>
+            <td class="number-cell">${row.record_count}</td>
+            <td>${lastFetchCell}</td>
+            <td><button onclick="fetchSource('${escapeHTML(row.name)}', this)">Pobierz</button></td>
+          </tr>
+        `);
       }
-      sourceFilter.value = [...sourceFilter.options].some((option) => option.value === selectedSource) ? selectedSource : "";
-      marketSourceFilter.value = [...marketSourceFilter.options].some((option) => option.value === selectedMarketSource) ? selectedMarketSource : "";
-      if (!rows.length) emptyRow(body, 3, "Brak zrodel");
+      sourceFilter.value = [...sourceFilter.options].some(o => o.value === selectedSource) ? selectedSource : "";
+      marketSourceFilter.value = [...marketSourceFilter.options].some(o => o.value === selectedMarketSource) ? selectedMarketSource : "";
+      if (!visibleCount) emptyRow(body, 5, showOnlyProblems ? "Brak problemow" : "Brak zrodel");
     }
 
     async function loadItemTypes() {
@@ -490,16 +553,17 @@ def dashboard():
 
     async function fetchSource(name, button) {
       button.disabled = true;
-      button.textContent = `Pobieram ${name}`;
+      button.textContent = "...";
       try {
         const result = await api(`/fetch/${name}`, { method: "POST" });
         document.getElementById("lastRun").textContent = `${result.source}: ${fmtStatus(result.status)}, ${result.items_fetched} rekordów`;
+        document.getElementById("lastRun").className = "status ok";
       } catch (error) {
-        document.getElementById("lastRun").textContent = `${name}: blad`;
+        document.getElementById("lastRun").textContent = `${name}: błąd`;
         document.getElementById("lastRun").className = "status error";
       } finally {
         button.disabled = false;
-        button.textContent = `Pobierz ${name}`;
+        button.textContent = "Pobierz";
         await loadAll();
       }
     }
@@ -667,6 +731,37 @@ def list_sources(session: Session = Depends(get_session)):
         }
         for row in rows
     ]
+
+
+@app.get("/sources/stats")
+def sources_stats(session: Session = Depends(get_session)):
+    sources = session.scalars(select(Source).order_by(Source.category, Source.name)).all()
+    result = []
+    for source in sources:
+        record_count = session.scalar(
+            select(func.count(RawItem.id)).where(RawItem.source_id == source.id)
+        ) or 0
+        last_log = session.execute(
+            select(FetchLog)
+            .where(FetchLog.source_id == source.id)
+            .order_by(desc(FetchLog.started_at))
+            .limit(1)
+        ).scalar_one_or_none()
+        result.append({
+            "id": source.id,
+            "name": source.name,
+            "category": source.category,
+            "is_active": source.is_active,
+            "record_count": record_count,
+            "last_status": last_log.status if last_log else None,
+            "last_fetch_at": last_log.started_at if last_log else None,
+            "last_error_message": (
+                last_log.error_message
+                if last_log and last_log.status not in ("success", "running")
+                else None
+            ),
+        })
+    return result
 
 
 def _fetch_log_payload(row: FetchLog, source_name: str | None = None):
